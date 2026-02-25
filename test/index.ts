@@ -1,15 +1,23 @@
 import 'dotenv/config'
 import { NCWebsocket, NCWebsocketOptions, Structs, type WSSendParam } from '../src/index.js'
+import { IFeature } from './Feature.js'
+import { jrrp } from './jrrp.js'
+import { dup_check } from './dup_check.js'
+
+const features: IFeature[] = [
+  jrrp,
+  dup_check
+]
 
 const WsConfig: NCWebsocketOptions = {
   protocol: 'ws',
-  host: '127.0.0.1',
-  port: 4040,
-  accessToken: process.env.NC_ACCESS_TOKEN, // 请填写你的access_token
+  host: process.env.WS_HOST!,
+  port: parseInt(process.env.WS_PORT!),
+  accessToken: process.env.WS_ACCESS_TOKEN!,
   throwPromise: false,
   reconnection: {
     enable: true,
-    attempts: 10,
+    attempts: Number.MAX_SAFE_INTEGER,
     delay: 5000,
   },
 }
@@ -43,25 +51,26 @@ bot.on('message', async (context) => {
   console.dir(context, { depth: null })
 
   context.message.forEach(async (item) => {
-    if (item.type !== 'text') return
+    console.log(`消息内容：${JSON.stringify(item)}`)
 
-    if (item.data.text === 'echo') {
-      await bot.send_msg({ ...context, message: [Structs.text('hi 我是小皮')] })
-    } else if (item.data.text === '233') {
-      await bot.send_msg({ ...context, message: [Structs.face(172)] })
-    } else if (item.data.text.startsWith('!')) {
-      const arr = item.data.text.slice(1).split(' ')
-      const commandName = arr[0] as keyof WSSendParam
-      const args = JSON.parse(arr.slice(1).join('') ?? '{}')
-      try {
-        const res = await bot.send(commandName, args)
-        await bot.send_msg({ ...context, message: [Structs.text(JSON.stringify(res))] })
-      } catch (error) {
-        await bot.send_msg({
-          ...context,
-          message: [Structs.text('发送请求出错\n'), Structs.text(JSON.stringify(error))],
-        })
+    let hasCommand = false
+    for (const feature of features) {
+      if (feature.check_command(item)) {
+        let ret = await feature.deal_with_message(item, context.sender)
+        if (ret == null || ret.length === 0) {
+          console.log('功能没有返回任何内容，跳过回复')
+        }
+        else {
+          await bot.send_msg({ ...context, message: [Structs.text(ret)] })
+        }
+        hasCommand = true
+        break
       }
+    }
+
+    if (!hasCommand && item.type == 'text' && item.data.text === 'echo features') {
+      let featureList = features.map(feature => feature.feature_name).join(',\n')
+      await bot.send_msg({ ...context, message: [Structs.text(`当前已加载的功能有：\n${featureList}`)] })
     }
   })
 })

@@ -1,0 +1,49 @@
+# docker-compose.yml
+# NAPCAT_UID=$(id -u) NAPCAT_GID=$(id -g) docker-compose -f ./compose/ws.yml up -d
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:v4.17.5
+    container_name: napcat
+    restart: always
+    mac_address: 02:42:ac:11:00:02 # 添加MAC地址固化配置
+
+    environment:
+      - NAPCAT_UID=${NAPCAT_UID}
+      - NAPCAT_GID=${NAPCAT_GID}
+      - ACCOUNT=${ACCOUNT}
+
+    ports:
+      - 3001:3001
+      - 6099:6099
+
+    volumes:
+      - ./napcat/config:/app/napcat/config
+      - ./ntqq:/app/.config/QQ
+
+  redis:
+    image: redis:8.2.5
+    container_name: redis
+    restart: always
+    mac_address: 02:42:ac:11:00:04 # 添加MAC地址固化配置
+
+    volumes:
+      - ./redis:/data
+
+    ports:
+      - 6379:6379
+
+  bot:
+    image: qq-bot:0.0.1
+    container_name: bot
+    restart: always
+    mac_address: 02:42:ac:11:00:03 # 添加MAC地址固化配置
+
+    environment:
+      - WS_HOST=napcat
+      - WS_PORT=3001
+      - WS_ACCESS_TOKEN=${WS_ACCESS_TOKEN}
+      - REDIS_URL=redis://redis:6379
+
+    depends_on:
+      - napcat
+      - redis
