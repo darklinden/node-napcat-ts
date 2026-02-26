@@ -48,7 +48,7 @@ bot.on('api.preSend', function (params) {
 
 bot.on('message', async (context) => {
   console.log('\n机器人收到了一条信息\n')
-  console.dir(context, { depth: null })
+  // console.dir(context, { depth: null })
 
   context.message.forEach(async (item) => {
     console.log(`消息内容：${JSON.stringify(item)}`)

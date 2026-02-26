@@ -7,14 +7,13 @@ import { imageSize, disableFS } from 'image-size';
 
 const MIN_WIDTH = 512
 const MIN_HEIGHT = 512
-const EXPIRE_DURATION = 3 * 24 * 3600 * 1000 // 3 天
+const EXPIRE_DURATION = 10 * 24 * 3600 // 10 天
 const MAX_CALL_OUT = 10
 const COOLDOWN = 180 * 1000 // 3 分钟
 
 export class DupCheck implements IFeature {
 
   public feature_name = '火星图出警'
-
 
   constructor() {
     disableFS(true)
@@ -38,7 +37,7 @@ export class DupCheck implements IFeature {
    * @returns {string}
    */
   formatTimestamp(timestamp: number): string {
-    const date = new Date(timestamp)
+    const date = new Date(timestamp + 8 * 3600 * 1000) // 转换为北京时间
 
     const year = this.padZero(date.getFullYear(), 4)
     const month = this.padZero(date.getMonth() + 1, 2)
@@ -86,7 +85,10 @@ export class DupCheck implements IFeature {
 
   async deal_with_message(msg: Receive[keyof Receive], user: { user_id: number; nickname: string; card: string }): Promise<string> {
 
-    if (msg.type !== 'image') return '';
+    if (msg.type !== 'image') {
+      console.log(`Message is not an image, skipping`);
+      return '';
+    }
 
     let imageHash: string | null = null;
     try {
@@ -97,16 +99,25 @@ export class DupCheck implements IFeature {
       });
       const imageBuffer = await resp.arrayBuffer();
       const { width, height, type: imageType } = await imageSize(new Uint8Array(imageBuffer))
-      if (width === undefined || height === undefined || width < MIN_WIDTH && height < MIN_HEIGHT) return '';
-      if (imageType === undefined || !['jpg', 'png', 'bmp', 'webp', 'tiff'].includes(imageType)) return '';
+      if (width === undefined || height === undefined || (width < MIN_WIDTH && height < MIN_HEIGHT)) {
+        console.log(`Image is too small, skipping: ${width}x${height}`);
+        return '';
+      }
+      if (imageType === undefined || !['jpg', 'png', 'bmp', 'webp', 'tiff'].includes(imageType)) {
+        console.log(`Unsupported image type, skipping: ${imageType}`);
+        return '';
+      }
 
       imageHash = await phash(imageBuffer, 16)
     } catch (error) {
-      console.warn('Something wrong happened during the request of the image')
-      console.warn(error)
+      console.log('Something wrong happened during the request of the image')
+      console.log(error)
     }
 
-    if (!imageHash) return '';
+    if (!imageHash) {
+      console.log('Failed to compute image hash, skipping');
+      return '';
+    }
 
     let record = await this.levenshteinRedis(imageHash, 0.1);
 
@@ -119,6 +130,7 @@ export class DupCheck implements IFeature {
         timestamp: Date.now(),
         cooldown: undefined,
       }));
+      console.log(`New Image hash stored: ${imageHash}`);
       return '';
     }
 
@@ -130,10 +142,18 @@ export class DupCheck implements IFeature {
     recordData.timestamp = Date.now();
     await this.redis.setex(`image:${imageHash}`, EXPIRE_DURATION, JSON.stringify(recordData));
 
-    if (recordData.count >= MAX_CALL_OUT) return '';
-    if (recordData.cooldown && recordData.cooldown >= recordData.timestamp) return '';
+    if (recordData.count >= MAX_CALL_OUT) {
+      console.log(`Max call out reached for image: ${imageHash}`);
+      return '';
+    }
+    if (recordData.cooldown && recordData.cooldown >= recordData.timestamp) {
+      console.log(`Image is still in cooldown: ${imageHash}`);
+      return '';
+    }
 
     recordData.cooldown = recordData.timestamp + COOLDOWN - 1;
+
+    console.log(`Duplicate image detected: ${imageHash}, similarity: ${record.similarity}, count: ${recordData.count}`);
 
     return `出警！${user.nickname} 又在发火星图了！` +
       `图片` +
