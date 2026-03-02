@@ -12,13 +12,14 @@ const MIN_HEIGHT = 512
 const EXPIRE_DURATION = 10 * 24 * 3600 // 10 天
 const EMOJI_EXPIRE_DURATION = 30 * 24 * 3600 // 30 天
 const MAX_CALL_OUT = 10
+const MARK_EMOJI_EXPIRE_DURATION = 60 // 1 分钟
 
 export class DupCheck implements IFeature {
 
   public feature_name = '火星图出警: -emoji 标记上个出警为表情包'
 
   /** Map of user_id -> last warned image hash, so they can dismiss with -emoji */
-  private lastWarnedMap: Map<number, string> = new Map()
+  private lastWarned: { user_id: number, user_name: string, hash: string, timestamp: number } | null = null;
 
   constructor() {
     disableFS(true)
@@ -96,16 +97,16 @@ export class DupCheck implements IFeature {
    * Handle the -emoji command: move the last warned hash from image:* to emoji:*.
    */
   private async handleEmojiCommand(user: { user_id: number; nickname: string }): Promise<SendMessageSegment | null> {
-    const hash = this.lastWarnedMap.get(user.user_id);
-    if (!hash) {
-      return Structs.text('没有找到你最近被出警的图片，无法标记为表情包。');
+    const hash = this.lastWarned;
+    if (!hash || Date.now() - hash.timestamp > MARK_EMOJI_EXPIRE_DURATION * 1000) {
+      return Structs.text('没有找到 1 分钟内最近被出警的图片，无法标记为表情包。');
     }
 
     // Get the existing record from image:*
-    const jsonStr = await this.redis.get(`image:${hash}`);
+    const jsonStr = await this.redis.get(`image:${hash.hash}`);
 
     // Remove from image:*
-    await this.redis.del(`image:${hash}`);
+    await this.redis.del(`image:${hash.hash}`);
 
     // Add to emoji:* with longer expiry
     await this.redis.setex(`emoji:${hash}`, EMOJI_EXPIRE_DURATION, jsonStr ?? JSON.stringify({
@@ -115,10 +116,12 @@ export class DupCheck implements IFeature {
     }));
 
     // Clear the user's last warned hash
-    this.lastWarnedMap.delete(user.user_id);
+    const userId = hash.user_id;
+    const userName = hash.user_name;
+    this.lastWarned = null;
 
-    console.log(`User ${user.nickname} (${user.user_id}) marked image as emoji: ${hash}`);
-    return Structs.text('已将该图片标记为表情包，后续不再出警。');
+    console.log(`User ${userName} (${userId}) marked image as emoji: ${hash}`);
+    return Structs.text(`已将 ${userName} (${userId}) 刚被出警的图片标记为表情包，后续不再出警。`);
   }
 
   async levenshteinRedis(imageHash: string, similarityThreshold: number): Promise<{ key: string; similarity: number } | null> {
@@ -223,7 +226,7 @@ export class DupCheck implements IFeature {
     console.log(`Duplicate image detected: ${imageHash}, similarity: ${record.similarity}, count: ${recordData.count}`);
 
     // Track the last warned hash for this user so they can dismiss with -emoji
-    this.lastWarnedMap.set(user.user_id, imageHash!);
+    this.lastWarned = { user_id: user.user_id, user_name: user.nickname, hash: imageHash!, timestamp: Date.now() };
 
     const ret = `出警！${user.nickname} 又在发火星图了！` +
       `图片` +
