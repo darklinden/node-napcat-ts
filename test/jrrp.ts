@@ -1,10 +1,11 @@
 import { createHash } from 'crypto'
 import { IFeature } from './Feature'
-import { Receive } from '../src'
+import { Receive, Structs } from '../src'
+import { type SendMessageSegment } from '../src/index.js'
 
 export class Jrrp implements IFeature {
 
-  public feature_name = '今日人品'
+  public feature_name = '今日人品: -jrrp 或 jrrp 查看今日人品'
 
   private readonly Result = '{0} 的今日人品是：{1}。{2}'
   private readonly Levels = [0, 20, 40, 60, 80]
@@ -32,7 +33,7 @@ export class Jrrp implements IFeature {
     user_id: number
     nickname: string
     card: string
-  }): Promise<string> {
+  }): Promise<SendMessageSegment> {
 
     let name: string = user.card
     if (!name || name.length === 0) name = user.nickname
@@ -66,10 +67,11 @@ export class Jrrp implements IFeature {
       comment = this.LevelDescriptions[`default-level-${key}`]
     }
 
-    return this.Result.replace('{0}', name)
+    const ret = this.Result.replace('{0}', name)
       .replace('{1}', luckValue.toString())
       .replace('{2}', comment);
 
+    return Structs.text(ret)
   }
 }
 

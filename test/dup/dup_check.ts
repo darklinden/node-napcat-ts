@@ -1,19 +1,24 @@
-import { Receive } from '../src';
-import { IFeature } from './Feature'
+import { Receive, Structs } from '../../src';
+import { IFeature } from '../Feature'
 import { distance as levenshtein } from 'fastest-levenshtein';
 import phash from './phash'
 import Redis from 'ioredis';
 import { imageSize, disableFS } from 'image-size';
+import { type SendMessageSegment } from '../../src/index.js'
+
 
 const MIN_WIDTH = 512
 const MIN_HEIGHT = 512
 const EXPIRE_DURATION = 10 * 24 * 3600 // 10 天
+const EMOJI_EXPIRE_DURATION = 30 * 24 * 3600 // 30 天
 const MAX_CALL_OUT = 10
-const COOLDOWN = 180 * 1000 // 3 分钟
 
 export class DupCheck implements IFeature {
 
-  public feature_name = '火星图出警'
+  public feature_name = '火星图出警: -emoji 标记上个出警为表情包'
+
+  /** Map of user_id -> last warned image hash, so they can dismiss with -emoji */
+  private lastWarnedMap: Map<number, string> = new Map()
 
   constructor() {
     disableFS(true)
@@ -50,7 +55,9 @@ export class DupCheck implements IFeature {
   }
 
   check_command(msg: Receive[keyof Receive]): boolean {
-    return msg.type === 'image';
+    if (msg.type === 'image') return true;
+    if (msg.type === 'text' && msg.data.text.trim() === '-emoji') return true;
+    return false;
   }
 
   private _redis: Redis | null = null;
@@ -59,6 +66,59 @@ export class DupCheck implements IFeature {
       this._redis = new Redis(process.env.REDIS_URL!)
     }
     return this._redis
+  }
+
+  /**
+   * Scan emoji:* keys and check if the image hash matches any known emoji.
+   * Returns true if the image is a known emoji and should be skipped.
+   */
+  async isKnownEmoji(imageHash: string, similarityThreshold: number): Promise<boolean> {
+    let cursor = '0';
+
+    do {
+      const result = await this.redis.scan(cursor, 'MATCH', 'emoji:*', 'COUNT', 1000);
+      cursor = result[0];
+
+      for (const key of result[1]) {
+        const hash = key.slice(6); // Remove 'emoji:' prefix
+        const similarity = this.distanceRatio(imageHash, hash);
+        if (similarity < similarityThreshold) {
+          console.log(`Image matches known emoji: ${key}, similarity: ${similarity}`);
+          return true;
+        }
+      }
+    } while (cursor !== '0');
+
+    return false;
+  }
+
+  /**
+   * Handle the -emoji command: move the last warned hash from image:* to emoji:*.
+   */
+  private async handleEmojiCommand(user: { user_id: number; nickname: string }): Promise<SendMessageSegment | null> {
+    const hash = this.lastWarnedMap.get(user.user_id);
+    if (!hash) {
+      return Structs.text('没有找到你最近被出警的图片，无法标记为表情包。');
+    }
+
+    // Get the existing record from image:*
+    const jsonStr = await this.redis.get(`image:${hash}`);
+
+    // Remove from image:*
+    await this.redis.del(`image:${hash}`);
+
+    // Add to emoji:* with longer expiry
+    await this.redis.setex(`emoji:${hash}`, EMOJI_EXPIRE_DURATION, jsonStr ?? JSON.stringify({
+      content: hash,
+      markedBy: user.user_id,
+      timestamp: Date.now(),
+    }));
+
+    // Clear the user's last warned hash
+    this.lastWarnedMap.delete(user.user_id);
+
+    console.log(`User ${user.nickname} (${user.user_id}) marked image as emoji: ${hash}`);
+    return Structs.text('已将该图片标记为表情包，后续不再出警。');
   }
 
   async levenshteinRedis(imageHash: string, similarityThreshold: number): Promise<{ key: string; similarity: number } | null> {
@@ -83,11 +143,16 @@ export class DupCheck implements IFeature {
     return keysWithSimilarity;
   }
 
-  async deal_with_message(msg: Receive[keyof Receive], user: { user_id: number; nickname: string; card: string }): Promise<string> {
+  async deal_with_message(msg: Receive[keyof Receive], user: { user_id: number; nickname: string; card: string }): Promise<SendMessageSegment | null> {
+
+    // Handle -emoji text command
+    if (msg.type === 'text' && msg.data.text.trim() === '-emoji') {
+      return this.handleEmojiCommand(user);
+    }
 
     if (msg.type !== 'image') {
       console.log(`Message is not an image, skipping`);
-      return '';
+      return null;
     }
 
     let imageHash: string | null = null;
@@ -101,11 +166,11 @@ export class DupCheck implements IFeature {
       const { width, height, type: imageType } = await imageSize(new Uint8Array(imageBuffer))
       if (width === undefined || height === undefined || (width < MIN_WIDTH && height < MIN_HEIGHT)) {
         console.log(`Image is too small, skipping: ${width}x${height}`);
-        return '';
+        return null;
       }
       if (imageType === undefined || !['jpg', 'png', 'bmp', 'webp', 'tiff'].includes(imageType)) {
         console.log(`Unsupported image type, skipping: ${imageType}`);
-        return '';
+        return null;
       }
 
       imageHash = await phash(imageBuffer, 16)
@@ -116,7 +181,13 @@ export class DupCheck implements IFeature {
 
     if (!imageHash) {
       console.log('Failed to compute image hash, skipping');
-      return '';
+      return null;
+    }
+
+    // Check if the image is a known emoji — skip dup check if so
+    if (await this.isKnownEmoji(imageHash, 0.1)) {
+      console.log(`Image is a known emoji, skipping dup check: ${imageHash}`);
+      return null;
     }
 
     let record = await this.levenshteinRedis(imageHash, 0.1);
@@ -131,35 +202,37 @@ export class DupCheck implements IFeature {
         cooldown: undefined,
       }));
       console.log(`New Image hash stored: ${imageHash}`);
-      return '';
+      return null;
     }
 
     let jsonStr = await this.redis.get(`image:${imageHash}`);
-    if (!jsonStr) return '';
+    if (!jsonStr) return null;
 
     let recordData = JSON.parse(jsonStr);
     recordData.count++;
     recordData.timestamp = Date.now();
+    imageHash = recordData.content;
+
     await this.redis.setex(`image:${imageHash}`, EXPIRE_DURATION, JSON.stringify(recordData));
 
     if (recordData.count >= MAX_CALL_OUT) {
       console.log(`Max call out reached for image: ${imageHash}`);
-      return '';
+      return null;
     }
-    if (recordData.cooldown && recordData.cooldown >= recordData.timestamp) {
-      console.log(`Image is still in cooldown: ${imageHash}`);
-      return '';
-    }
-
-    recordData.cooldown = recordData.timestamp + COOLDOWN - 1;
 
     console.log(`Duplicate image detected: ${imageHash}, similarity: ${record.similarity}, count: ${recordData.count}`);
 
-    return `出警！${user.nickname} 又在发火星图了！` +
+    // Track the last warned hash for this user so they can dismiss with -emoji
+    this.lastWarnedMap.set(user.user_id, imageHash!);
+
+    const ret = `出警！${user.nickname} 又在发火星图了！` +
       `图片` +
       `由 ${recordData.sender} (${recordData.id})` +
       `于 ${this.formatTimestamp(recordData.timestamp)} 发过，` +
-      `已经被发过了 ${recordData.count} 次！`;
+      `已经被发过了 ${recordData.count} 次！\n` +
+      `如果这是表情包，请发送 -emoji 来标记，后续不再出警。`;
+
+    return Structs.text(ret);
   }
 }
 

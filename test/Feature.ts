@@ -1,4 +1,6 @@
 import { Receive } from "../src"
+import { type SendMessageSegment } from '../src/index.js'
+
 
 export interface IFeature {
 
@@ -10,6 +12,6 @@ export interface IFeature {
         user_id: number
         nickname: string
         card: string
-    }): Promise<string>
+    }): Promise<SendMessageSegment | null>
 
 }

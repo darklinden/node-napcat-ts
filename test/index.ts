@@ -2,11 +2,13 @@ import 'dotenv/config'
 import { NCWebsocket, NCWebsocketOptions, Structs, type WSSendParam } from '../src/index.js'
 import { IFeature } from './Feature.js'
 import { jrrp } from './jrrp.js'
-import { dup_check } from './dup_check.js'
+import { dup_check } from './dup/dup_check.js'
+import draw5k from './5k/draw5k.js'
 
 const features: IFeature[] = [
   jrrp,
-  dup_check
+  dup_check,
+  draw5k
 ]
 
 const WsConfig: NCWebsocketOptions = {
@@ -57,11 +59,11 @@ bot.on('message', async (context) => {
     for (const feature of features) {
       if (feature.check_command(item)) {
         let ret = await feature.deal_with_message(item, context.sender)
-        if (ret == null || ret.length === 0) {
+        if (!ret) {
           console.log('功能没有返回任何内容，跳过回复')
         }
         else {
-          await bot.send_msg({ ...context, message: [Structs.text(ret)] })
+          await bot.send_msg({ ...context, message: [ret] })
         }
         hasCommand = true
         break
