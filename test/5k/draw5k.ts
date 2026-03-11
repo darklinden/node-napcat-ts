@@ -1,4 +1,4 @@
-import { Receive, Structs, type SendMessageSegment } from "../../src"
+import { GroupMessage, PrivateFriendMessage, PrivateGroupMessage, Receive, Structs, type SendMessageSegment } from "../../src"
 import { IFeature } from "../Feature"
 import { access } from "fs/promises"
 import { resolve, dirname } from "path"
@@ -125,11 +125,11 @@ export class Draw5k implements IFeature {
     return true
   }
 
-  async deal_with_message(msg: Receive[keyof Receive], user: {
-    user_id: number
-    nickname: string
-    card: string
-  }): Promise<SendMessageSegment | null> {
+  async deal_with_message(
+    context: PrivateFriendMessage | PrivateGroupMessage | GroupMessage,
+    msg: Receive[keyof Receive],
+    user: { user_id: number; nickname: string; card: string }
+  ): Promise<SendMessageSegment | null> {
 
     if (msg.type !== 'text') return null
 

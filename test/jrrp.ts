@@ -1,6 +1,6 @@
 import { createHash } from 'crypto'
 import { IFeature } from './Feature'
-import { Receive, Structs } from '../src'
+import { GroupMessage, PrivateFriendMessage, PrivateGroupMessage, Receive, Structs } from '../src'
 import { type SendMessageSegment } from '../src/index.js'
 
 export class Jrrp implements IFeature {
@@ -29,11 +29,11 @@ export class Jrrp implements IFeature {
     return msg.type == 'text' && (msg.data.text === '-jrrp' || msg.data.text === 'jrrp');
   }
 
-  public async deal_with_message(msg: Receive[keyof Receive], user: {
-    user_id: number
-    nickname: string
-    card: string
-  }): Promise<SendMessageSegment> {
+  async deal_with_message(
+    context: PrivateFriendMessage | PrivateGroupMessage | GroupMessage,
+    msg: Receive[keyof Receive],
+    user: { user_id: number; nickname: string; card: string }
+  ): Promise<SendMessageSegment | null> {
 
     let name: string = user.card
     if (!name || name.length === 0) name = user.nickname

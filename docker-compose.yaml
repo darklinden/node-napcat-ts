@@ -43,6 +43,7 @@ services:
       - WS_PORT=3001
       - WS_ACCESS_TOKEN=${WS_ACCESS_TOKEN}
       - REDIS_URL=redis://redis:6379
+      - COMFY_UI_URL=${COMFY_UI_URL}
 
     depends_on:
       - napcat

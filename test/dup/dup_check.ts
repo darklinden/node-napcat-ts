@@ -1,4 +1,4 @@
-import { Receive, Structs } from '../../src';
+import { GroupMessage, PrivateFriendMessage, PrivateGroupMessage, Receive, Structs } from '../../src';
 import { IFeature } from '../Feature'
 import { distance as levenshtein } from 'fastest-levenshtein';
 import phash from './phash'
@@ -10,7 +10,7 @@ import { type SendMessageSegment } from '../../src/index.js'
 const MIN_WIDTH = 512
 const MIN_HEIGHT = 512
 const EXPIRE_DURATION = 10 * 24 * 3600 // 10 天
-const EMOJI_EXPIRE_DURATION = 30 * 24 * 3600 // 30 天
+const EMOJI_EXPIRE_DURATION = 90 * 24 * 3600 // 90 天
 const MAX_CALL_OUT = 10
 const MARK_EMOJI_EXPIRE_DURATION = 60 // 1 分钟
 
@@ -102,16 +102,31 @@ export class DupCheck implements IFeature {
       return Structs.text('没有找到 1 分钟内最近被出警的图片，无法标记为表情包。');
     }
 
+    let cursor = '0';
+    let keysToDelete: string[] = [];
+    const similarityThreshold = 0.1;
     // Get the existing record from image:*
-    const jsonStr = await this.redis.get(`image:${hash.hash}`);
+    do {
+      const result = await this.redis.scan(cursor, 'MATCH', 'image:*', 'COUNT', 1000);
+      cursor = result[0];
 
-    // Remove from image:*
-    await this.redis.del(`image:${hash.hash}`);
+      for (const key of result[1]) {
+        let k = key.slice(6); // Remove 'image:' prefix
+        const similarity = this.distanceRatio(k, hash.hash);
+        if (similarity < similarityThreshold) {
+          keysToDelete.push(key);
+        }
+      }
+
+    } while (cursor !== '0');
+
+    await this.redis.del(keysToDelete);
 
     // Add to emoji:* with longer expiry
-    await this.redis.setex(`emoji:${hash}`, EMOJI_EXPIRE_DURATION, jsonStr ?? JSON.stringify({
-      content: hash,
-      markedBy: user.user_id,
+    await this.redis.setex(`emoji:${hash.hash}`, EMOJI_EXPIRE_DURATION, JSON.stringify({
+      content: hash.hash,
+      markedById: user.user_id,
+      markedByName: user.nickname,
       timestamp: Date.now(),
     }));
 
@@ -146,7 +161,11 @@ export class DupCheck implements IFeature {
     return keysWithSimilarity;
   }
 
-  async deal_with_message(msg: Receive[keyof Receive], user: { user_id: number; nickname: string; card: string }): Promise<SendMessageSegment | null> {
+  async deal_with_message(
+    context: PrivateFriendMessage | PrivateGroupMessage | GroupMessage,
+    msg: Receive[keyof Receive],
+    user: { user_id: number; nickname: string; card: string }
+  ): Promise<SendMessageSegment | null> {
 
     // Handle -emoji text command
     if (msg.type === 'text' && msg.data.text.trim() === '-emoji') {

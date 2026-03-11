@@ -4,11 +4,13 @@ import { IFeature } from './Feature.js'
 import { jrrp } from './jrrp.js'
 import { dup_check } from './dup/dup_check.js'
 import draw5k from './5k/draw5k.js'
+import sdImage from './SDImage.js'
 
 const features: IFeature[] = [
   jrrp,
   dup_check,
-  draw5k
+  draw5k,
+  sdImage
 ]
 
 const WsConfig: NCWebsocketOptions = {
@@ -57,8 +59,9 @@ bot.on('message', async (context) => {
 
     let hasCommand = false
     for (const feature of features) {
+      feature.bot = bot
       if (feature.check_command(item)) {
-        let ret = await feature.deal_with_message(item, context.sender)
+        let ret = await feature.deal_with_message(context, item, context.sender)
         if (!ret) {
           console.log('功能没有返回任何内容，跳过回复')
         }
