@@ -44,6 +44,7 @@ services:
       - WS_ACCESS_TOKEN=${WS_ACCESS_TOKEN}
       - REDIS_URL=redis://redis:6379
       - COMFY_UI_URL=${COMFY_UI_URL}
+      - GOLD_API_TOKEN=${GOLD_API_TOKEN}
 
     depends_on:
       - napcat

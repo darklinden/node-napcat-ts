@@ -2,10 +2,9 @@ import { GroupMessage, PrivateFriendMessage, PrivateGroupMessage, Receive, Struc
 import { IFeature } from '../Feature'
 import { distance as levenshtein } from 'fastest-levenshtein';
 import phash from './phash'
-import Redis from 'ioredis';
 import { imageSize, disableFS } from 'image-size';
 import { type SendMessageSegment } from '../../src/index.js'
-
+import redis from '../redis.js';
 
 const MIN_WIDTH = 512
 const MIN_HEIGHT = 512
@@ -61,13 +60,7 @@ export class DupCheck implements IFeature {
     return false;
   }
 
-  private _redis: Redis | null = null;
-  private get redis(): Redis {
-    if (!this._redis) {
-      this._redis = new Redis(process.env.REDIS_URL!)
-    }
-    return this._redis
-  }
+
 
   /**
    * Scan emoji:* keys and check if the image hash matches any known emoji.
@@ -77,7 +70,7 @@ export class DupCheck implements IFeature {
     let cursor = '0';
 
     do {
-      const result = await this.redis.scan(cursor, 'MATCH', 'emoji:*', 'COUNT', 1000);
+      const result = await redis.scan(cursor, 'MATCH', 'emoji:*', 'COUNT', 1000);
       cursor = result[0];
 
       for (const key of result[1]) {
@@ -107,7 +100,7 @@ export class DupCheck implements IFeature {
     const similarityThreshold = 0.1;
     // Get the existing record from image:*
     do {
-      const result = await this.redis.scan(cursor, 'MATCH', 'image:*', 'COUNT', 1000);
+      const result = await redis.scan(cursor, 'MATCH', 'image:*', 'COUNT', 1000);
       cursor = result[0];
 
       for (const key of result[1]) {
@@ -120,10 +113,10 @@ export class DupCheck implements IFeature {
 
     } while (cursor !== '0');
 
-    await this.redis.del(keysToDelete);
+    await redis.del(keysToDelete);
 
     // Add to emoji:* with longer expiry
-    await this.redis.setex(`emoji:${hash.hash}`, EMOJI_EXPIRE_DURATION, JSON.stringify({
+    await redis.setex(`emoji:${hash.hash}`, EMOJI_EXPIRE_DURATION, JSON.stringify({
       content: hash.hash,
       markedById: user.user_id,
       markedByName: user.nickname,
@@ -144,7 +137,7 @@ export class DupCheck implements IFeature {
     let keysWithSimilarity: { key: string, similarity: number } | null = null;
 
     do {
-      const result = await this.redis.scan(cursor, 'MATCH', 'image:*', 'COUNT', 1000);
+      const result = await redis.scan(cursor, 'MATCH', 'image:*', 'COUNT', 1000);
       cursor = result[0];
 
       for (const key of result[1]) {
@@ -215,7 +208,7 @@ export class DupCheck implements IFeature {
     let record = await this.levenshteinRedis(imageHash, 0.1);
 
     if (!record) {
-      await this.redis.setex(`image:${imageHash}`, EXPIRE_DURATION, JSON.stringify({
+      await redis.setex(`image:${imageHash}`, EXPIRE_DURATION, JSON.stringify({
         content: imageHash,
         count: 0,
         id: user.user_id,
@@ -227,7 +220,7 @@ export class DupCheck implements IFeature {
       return null;
     }
 
-    let jsonStr = await this.redis.get(`image:${imageHash}`);
+    let jsonStr = await redis.get(`image:${imageHash}`);
     if (!jsonStr) return null;
 
     let recordData = JSON.parse(jsonStr);
@@ -235,7 +228,7 @@ export class DupCheck implements IFeature {
     recordData.timestamp = Date.now();
     imageHash = recordData.content;
 
-    await this.redis.setex(`image:${imageHash}`, EXPIRE_DURATION, JSON.stringify(recordData));
+    await redis.setex(`image:${imageHash}`, EXPIRE_DURATION, JSON.stringify(recordData));
 
     if (recordData.count >= MAX_CALL_OUT) {
       console.log(`Max call out reached for image: ${imageHash}`);
