@@ -18,6 +18,7 @@ const GOLD_API_URLS = {
   XPT: `${GOLD_API_BASE_URL}XPT/USD`,
 }
 
+const FETCH_RETRY_LIMIT = 5
 
 const FIFTEEN_MIN_MS = 30 * 60 * 1000
 const CACHE_EXPIRE = 40 * 60 // 40 minutes in seconds, slightly longer than 15m window
@@ -209,20 +210,46 @@ export class GoldPrice implements IFeature {
     }
   }
 
-  private async fetchCNYGoldPrice(): Promise<IJisuApiResult> {
-    const res = await fetch(JISU_GOLD_PRICE_URL)
-    const json = await res.json()
-    if (json.status !== 0) {
-      throw new Error(`API error: ${json.msg}`)
+  private async fetchCNYGoldPrice(): Promise<IJisuApiResult | null> {
+    let retryCount = 0
+    let json: IJisuApiResult | null = null
+    while (retryCount < FETCH_RETRY_LIMIT) {
+      try {
+        const res = await fetch(JISU_GOLD_PRICE_URL)
+        json = await res.json()
+        if (!json || json.status !== 0) {
+          throw new Error(`API error: ${json?.msg}`)
+        }
+      }
+      catch (err) {
+        console.error('[GoldPrice] Error fetching CNY gold price:', err)
+        retryCount++
+        console.log(`[GoldPrice] Retrying... (${retryCount}/${FETCH_RETRY_LIMIT})`)
+        await new Promise(resolve => setTimeout(resolve, 1000)) // Exponential backoff
+        continue
+      }
     }
     return json
   }
 
-  private async fetchCNYSilverPrice(): Promise<IJisuApiResult> {
-    const res = await fetch(JISU_SILVER_PRICE_URL)
-    const json = await res.json()
-    if (json.status !== 0) {
-      throw new Error(`API error: ${json.msg}`)
+  private async fetchCNYSilverPrice(): Promise<IJisuApiResult | null> {
+    let retryCount = 0
+    let json: IJisuApiResult | null = null
+    while (retryCount < FETCH_RETRY_LIMIT) {
+      try {
+        const res = await fetch(JISU_SILVER_PRICE_URL)
+        json = await res.json()
+        if (!json || json.status !== 0) {
+          throw new Error(`API error: ${json?.msg}`)
+        }
+      }
+      catch (err) {
+        console.error('[GoldPrice] Error fetching CNY silver price:', err)
+        retryCount++
+        console.log(`[GoldPrice] Retrying... (${retryCount}/${FETCH_RETRY_LIMIT})`)
+        await new Promise(resolve => setTimeout(resolve, 1000)) // Exponential backoff
+        continue
+      }
     }
     return json
   }
@@ -234,8 +261,15 @@ export class GoldPrice implements IFeature {
     ])
 
     const priceMap: Partial<Record<string, IJisuApiResultItem>> = {}
-    for (const item of [...gold.result, ...silver.result]) {
-      priceMap[item.type] = item
+    if (gold && gold.status === 0) {
+      for (const item of gold.result) {
+        priceMap[item.type] = item
+      }
+    }
+    if (silver && silver.status === 0) {
+      for (const item of silver.result) {
+        priceMap[item.type] = item
+      }
     }
 
     return {
@@ -246,13 +280,28 @@ export class GoldPrice implements IFeature {
     }
   }
 
-  private async fetchUSDPrice(metal: string): Promise<IGoldApiResult> {
-    const url = GOLD_API_URLS[metal as keyof typeof GOLD_API_URLS]
-    const res = await fetch(url, { headers: { 'x-access-token': GOLD_API_TOKEN } })
-    if (!res.ok) {
-      throw new Error(`Failed to fetch ${metal} price: ${res.status} ${res.statusText}`)
+  private async fetchUSDPrice(metal: string): Promise<IGoldApiResult | null> {
+    let retryCount = 0
+    let json: IGoldApiResult | null = null
+    while (retryCount < FETCH_RETRY_LIMIT) {
+      try {
+        const url = GOLD_API_URLS[metal as keyof typeof GOLD_API_URLS]
+        const res = await fetch(url, { headers: { 'x-access-token': GOLD_API_TOKEN } })
+        if (!res.ok) {
+          throw new Error(`Failed to fetch ${metal} price: ${res.status} ${res.statusText}`)
+        }
+        json = await res.json() as IGoldApiResult
+      }
+      catch (err) {
+        console.error(`[GoldPrice] Error fetching ${metal} price:`, err)
+        retryCount++
+        console.log(`[GoldPrice] Retrying... (${retryCount}/${FETCH_RETRY_LIMIT})`)
+        await new Promise(resolve => setTimeout(resolve, 1000)) // Exponential backoff
+        continue
+      }
+      break
     }
-    const json = await res.json() as IGoldApiResult
+
     return json
   }
 
@@ -261,7 +310,10 @@ export class GoldPrice implements IFeature {
     const results: Partial<Record<string, IGoldApiResult>> = {}
     for (const metal of metals) {
       try {
-        results[metal.toLowerCase()] = await this.fetchUSDPrice(metal)
+        const result = await this.fetchUSDPrice(metal)
+        if (result) {
+          results[metal.toLowerCase()] = result
+        }
       } catch (err) {
         console.error(`[GoldPrice] Error fetching ${metal} price:`, err)
       }
@@ -315,13 +367,13 @@ export class GoldPrice implements IFeature {
 
         if (!result.gold || !result.platinum) {
           const cnyGold = await this.fetchCNYGoldPrice();
-          result.gold = cnyGold.result.find(item => item.type === METAL_CODES.gold) || result.gold || null
-          result.platinum = cnyGold.result.find(item => item.type === METAL_CODES.platinum) || result.platinum || null
+          result.gold = cnyGold?.result.find(item => item.type === METAL_CODES.gold) || result.gold || null
+          result.platinum = cnyGold?.result.find(item => item.type === METAL_CODES.platinum) || result.platinum || null
         }
 
         if (!result.silver) {
           const cnySilver = await this.fetchCNYSilverPrice();
-          result.silver = cnySilver.result.find(item => item.type === METAL_CODES.silver) || result.silver || null
+          result.silver = cnySilver?.result.find(item => item.type === METAL_CODES.silver) || result.silver || null
         }
 
         if (!result.gold_usd) {
