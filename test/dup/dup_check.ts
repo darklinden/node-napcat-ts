@@ -225,7 +225,6 @@ export class DupCheck implements IFeature {
 
     let recordData = JSON.parse(jsonStr);
     recordData.count++;
-    recordData.timestamp = Date.now();
     imageHash = recordData.content;
 
     await redis.setex(`image:${imageHash}`, EXPIRE_DURATION, JSON.stringify(recordData));

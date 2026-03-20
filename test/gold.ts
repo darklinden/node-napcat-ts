@@ -7,9 +7,11 @@ import redis from './redis.js'
 // https://api.jisuapi.com/silver/shgold?appkey=<appkey>
 const JISU_GOLD_BASE_URL = 'https://api.jisuapi.com/'
 const JISU_GOLD_TOKEN = process.env.JISU_API_TOKEN ?? ''
-const JISU_GOLD_PRICE_URL = `${JISU_GOLD_BASE_URL}/gold/shgold?appkey=${JISU_GOLD_TOKEN}`
-const JISU_SILVER_PRICE_URL = `${JISU_GOLD_BASE_URL}/silver/shgold?appkey=${JISU_GOLD_TOKEN}`
+const JISU_GOLD_PRICE_URL = `${JISU_GOLD_BASE_URL}gold/shgold?appkey=${JISU_GOLD_TOKEN}`
+const JISU_SILVER_PRICE_URL = `${JISU_GOLD_BASE_URL}silver/shgold?appkey=${JISU_GOLD_TOKEN}`
 
+// curl -H "x-access-token: <token>" https://www.goldapi.io/api/XAU/USD -X GET 
+// wget --header="x-access-token: <token>" https://www.goldapi.io/api/XAU/USD -O- -q
 const GOLD_API_BASE_URL = 'https://www.goldapi.io/api/'
 const GOLD_API_TOKEN = process.env.GOLD_API_TOKEN ?? ''
 const GOLD_API_URLS = {
@@ -18,10 +20,40 @@ const GOLD_API_URLS = {
   XPT: `${GOLD_API_BASE_URL}XPT/USD`,
 }
 
+// https://currencyapi.net/api/v2/rates?base=USD&output=json&key=
+// {
+//   "valid": true,
+//   "updated": 1773968416,
+//   "base": "USD",
+//   "rates": {
+//     "CNY": 6.899882702,
+//   }
+// }
+
+const CURRENCY_RATES_API_TOKEN = process.env.CURRENCY_RATES_API_TOKEN ?? ''
+const CURRENCY_RATES_API_URL = 'https://currencyapi.net/api/v2/rates?base=USD&output=json&key=' + CURRENCY_RATES_API_TOKEN
+
+interface ICachedRateData {
+  time: number // 1773968416
+  update_time?: string // "2026-03-17 12:00:16"
+  usd_cny: number | null // 6.899882702
+}
+
+interface ICurrencyApiResult {
+  valid: boolean
+  updated: number
+  base: string
+  rates: {
+    CNY: number
+  }
+}
+
+const OUNCE_TO_GRAM = 31.1035
+
 const FETCH_RETRY_LIMIT = 5
 
-const FIFTEEN_MIN_MS = 30 * 60 * 1000
-const CACHE_EXPIRE = 40 * 60 // 40 minutes in seconds, slightly longer than 15m window
+const FETCH_INTERVAL_MS = 30 * 60 * 1000
+const CACHE_EXPIRE = 40 * 60 // 40 minutes in seconds, slightly longer than 30m window
 
 //         {
 //             "type": "AU99.99",
@@ -74,6 +106,12 @@ const METAL_CODES = {
   platinum_usd: 'XPT', // 铂金美元价格
 }
 
+const METAL_NAMES = {
+  'XAU': 'gold_usd',
+  'XAG': 'silver_usd',
+  'XPT': 'platinum_usd',
+}
+
 interface IJisuApiResultItem {
   type: string
   typename: string
@@ -88,7 +126,7 @@ interface IJisuApiResultItem {
 }
 
 interface IJisuApiResult {
-  status: number
+  status: number | string
   msg: string
   result: IJisuApiResultItem[]
 }
@@ -159,7 +197,7 @@ interface IGoldApiResult {
 
 /** Align a timestamp down to the current 30-minute window start */
 function align30Min(ts: number): number {
-  return Math.floor(ts / FIFTEEN_MIN_MS) * FIFTEEN_MIN_MS
+  return Math.floor(ts / FETCH_INTERVAL_MS) * FETCH_INTERVAL_MS
 }
 
 export class GoldPrice implements IFeature {
@@ -167,15 +205,26 @@ export class GoldPrice implements IFeature {
   public feature_name = '今日金价: -gold 或 gold 查看今日金价'
 
   private readonly Result =
-    '💰 今日金价 {datetime}\n'
-    + '今日金价: {gold}元/克\n  开盘价: {gold_open}元/克\n  最高价: {gold_high}元/克\n  最低价: {gold_low}元/克\n  涨跌幅: {gold_changepercent}%\n  昨收价: {gold_lastclosingprice}元/克\n'
-    + '白银价格: {silver}元/公斤\n  开盘价: {silver_open}元/公斤\n  最高价: {silver_high}元/公斤\n  最低价: {silver_low}元/公斤\n  涨跌幅: {silver_changepercent}%\n  昨收价: {silver_lastclosingprice}元/公斤\n'
-    + '铂金价格: {platinum}元/克\n  开盘价: {platinum_open}元/克\n  最高价: {platinum_high}元/克\n  最低价: {platinum_low}元/克\n  涨跌幅: {platinum_changepercent}%\n  昨收价: {platinum_lastclosingprice}元/克\n'
-    + '数据来源: Jisu API (https://www.jisuapi.com/)\n\n'
-    + '黄金美元价格: {gold_usd} USD/盎司\n  开盘价: {gold_usd_open} USD/盎司\n  最高价: {gold_usd_high} USD/盎司\n  最低价: {gold_usd_low} USD/盎司\n  涨跌幅: {gold_usd_changepercent}%\n  昨收价: {gold_usd_lastclosingprice} USD/盎司\n'
-    + '白银美元价格: {silver_usd} USD/盎司\n  开盘价: {silver_usd_open} USD/盎司\n  最高价: {silver_usd_high} USD/盎司\n  最低价: {silver_usd_low} USD/盎司\n  涨跌幅: {silver_usd_changepercent}%\n  昨收价: {silver_usd_lastclosingprice} USD/盎司\n'
-    + '铂金美元价格: {platinum_usd} USD/盎司\n  开盘价: {platinum_usd_open} USD/盎司\n  最高价: {platinum_usd_high} USD/盎司\n  最低价: {platinum_usd_low} USD/盎司\n  涨跌幅: {platinum_usd_changepercent}%\n  昨收价: {platinum_usd_lastclosingprice} USD/盎司\n'
-    + '数据来源: GoldAPI (https://www.goldapi.io/)'
+    '💰 国内金价 数据来源: Jisu API ( https://www.jisuapi.com/ )\n'
+    + '黄金价格: {gold}元/克\n'
+    + '  开盘价: {gold_open}元/克 最高价: {gold_high}元/克 最低价: {gold_low}元/克\n'
+    + '  涨跌幅: {gold_changepercent}% 昨收价: {gold_lastclosingprice}元/克 更新时间: {gold_updatetime}\n\n'
+    + '白银价格: {silver}元/公斤\n'
+    + '  开盘价: {silver_open}元/公斤 最高价: {silver_high}元/公斤 最低价: {silver_low}元/公斤\n'
+    + '  涨跌幅: {silver_changepercent}% 昨收价: {silver_lastclosingprice}元/公斤 更新时间: {silver_updatetime}\n\n'
+    + '铂金价格: {platinum}元/克\n'
+    + '  开盘价: {platinum_open}元/克 最高价: {platinum_high}元/克 最低价: {platinum_low}元/克\n'
+    + '  涨跌幅: {platinum_changepercent}% 昨收价: {platinum_lastclosingprice}元/克 更新时间: {platinum_updatetime}\n\n'
+    + '💰 国际金价 数据来源: GoldAPI ( https://www.goldapi.io/ ) 汇率数据来源: 汇率 API ( https://currencyapi.net/ )\n'
+    + '黄金美元价格: {gold_usd} USD/盎司 折合 {gold_usd_cny}元/克\n'
+    + '  开盘价: {gold_usd_open} USD/盎司 最高价: {gold_usd_high} USD/盎司 最低价: {gold_usd_low} USD/盎司\n'
+    + '  涨跌幅: {gold_usd_changepercent}% 昨收价: {gold_usd_lastclosingprice} USD/盎司 更新时间: {gold_usd_updatetime}\n\n'
+    + '白银美元价格: {silver_usd} USD/盎司 折合 {silver_usd_cny}元/克\n'
+    + '  开盘价: {silver_usd_open} USD/盎司 最高价: {silver_usd_high} USD/盎司 最低价: {silver_usd_low} USD/盎司\n'
+    + '  涨跌幅: {silver_usd_changepercent}% 昨收价: {silver_usd_lastclosingprice} USD/盎司 更新时间: {silver_usd_updatetime}\n\n'
+    + '铂金美元价格: {platinum_usd} USD/盎司 折合 {platinum_usd_cny}元/克\n'
+    + '  开盘价: {platinum_usd_open} USD/盎司 最高价: {platinum_usd_high} USD/盎司 最低价: {platinum_usd_low} USD/盎司\n'
+    + '  涨跌幅: {platinum_usd_changepercent}% 昨收价: {platinum_usd_lastclosingprice} USD/盎司 更新时间: {platinum_usd_updatetime}\n'
 
 
   public check_command(msg: Receive[keyof Receive]): boolean {
@@ -203,11 +252,56 @@ export class GoldPrice implements IFeature {
   private async cachePrices(windowTs: number, data: ICachedPriceData): Promise<void> {
     const key = this.getCacheKey(windowTs)
     await redis.setex(key, CACHE_EXPIRE, JSON.stringify(data))
-    // Also store per-metal keys for historical tracking
-    for (const [metal, price] of Object.entries(data)) {
-      if (metal === 'timestamp') continue
-      await redis.setex(`gold:${metal}:${windowTs}`, CACHE_EXPIRE, price)
+  }
+
+  /** Try to load cached prices from Redis for the current 15-min window */
+  private async getCachedRate(): Promise<ICachedRateData | null> {
+    const key = `RATE:USD:CNY`
+    const cached = await redis.get(key)
+    if (!cached) return null
+    try {
+      return JSON.parse(cached) as ICachedRateData
+    } catch {
+      return null
     }
+  }
+
+  /** Store prices into Redis keyed by the 15-min window */
+  private async cacheRate(data: ICachedRateData): Promise<void> {
+    const key = `RATE:USD:CNY`
+    await redis.set(key, JSON.stringify(data))
+  }
+
+  private async fetchUSDRateCNY(): Promise<ICachedRateData | null> {
+    let retryCount = 0
+    let json: ICurrencyApiResult | null = null
+    while (retryCount < FETCH_RETRY_LIMIT) {
+      try {
+        const res = await fetch(CURRENCY_RATES_API_URL, { method: 'GET' })
+        json = await res.json()
+        if (!json || !json.rates || typeof json.rates.CNY !== 'number') {
+          throw new Error(`API error: ${JSON.stringify(json)}`)
+        }
+        break
+      }
+      catch (err) {
+        console.error('[GoldPrice] Error fetching USD/CNY rate:', err)
+        retryCount++
+        console.log(`[GoldPrice] Retrying... (${retryCount}/${FETCH_RETRY_LIMIT})`)
+        await new Promise(resolve => setTimeout(resolve, 1000)) // Exponential backoff
+        continue
+      }
+    }
+    if (json && json.rates && typeof json.rates.CNY === 'number') {
+      const ret = {
+        time: Date.now(),
+        update_time: this.formatDatetime(json.updated * 1000),
+        usd_cny: json.rates.CNY,
+      }
+      await this.cacheRate(ret)
+      return ret
+    }
+    return null
   }
 
   private async fetchCNYGoldPrice(): Promise<IJisuApiResult | null> {
@@ -217,9 +311,10 @@ export class GoldPrice implements IFeature {
       try {
         const res = await fetch(JISU_GOLD_PRICE_URL)
         json = await res.json()
-        if (!json || json.status !== 0) {
-          throw new Error(`API error: ${json?.msg}`)
+        if (!json || !(+json.status === 0 || +json.status === 104)) {
+          throw new Error(`API error: ${JSON.stringify(json)}`)
         }
+        break
       }
       catch (err) {
         console.error('[GoldPrice] Error fetching CNY gold price:', err)
@@ -239,9 +334,10 @@ export class GoldPrice implements IFeature {
       try {
         const res = await fetch(JISU_SILVER_PRICE_URL)
         json = await res.json()
-        if (!json || json.status !== 0) {
-          throw new Error(`API error: ${json?.msg}`)
+        if (!json || !(+json.status === 0 || +json.status === 104)) {
+          throw new Error(`API error: ${JSON.stringify(json)}`)
         }
+        break
       }
       catch (err) {
         console.error('[GoldPrice] Error fetching CNY silver price:', err)
@@ -261,16 +357,59 @@ export class GoldPrice implements IFeature {
     ])
 
     const priceMap: Partial<Record<string, IJisuApiResultItem>> = {}
-    if (gold && gold.status === 0) {
-      for (const item of gold.result) {
-        priceMap[item.type] = item
+    if (gold)
+      if (gold.status === 0) {
+        for (const item of gold.result) {
+          priceMap[item.type] = item
+        }
       }
-    }
-    if (silver && silver.status === 0) {
-      for (const item of silver.result) {
-        priceMap[item.type] = item
+      else if (gold.status === 104) {
+        priceMap[METAL_CODES.gold] = {
+          type: METAL_CODES.gold,
+          typename: '黄金',
+          price: 'N/A', // 当前价
+          openingprice: 'N/A', // 开盘价
+          maxprice: 'N/A', // 最高价
+          minprice: 'N/A', // 最低价
+          changepercent: 'N/A', // 涨跌幅
+          lastclosingprice: 'N/A', // 昨收价
+          tradeamount: 'N/A', // 成交量
+          updatetime: 'N/A', // 更新时间
+        }
+        priceMap[METAL_CODES.platinum] = {
+          type: METAL_CODES.platinum,
+          typename: '铂金',
+          price: 'N/A', // 当前价
+          openingprice: 'N/A', // 开盘价
+          maxprice: 'N/A', // 最高价
+          minprice: 'N/A', // 最低价
+          changepercent: 'N/A', // 涨跌幅
+          lastclosingprice: 'N/A', // 昨收价
+          tradeamount: 'N/A', // 成交量
+          updatetime: 'N/A', // 更新时间
+        }
       }
-    }
+
+    if (silver)
+      if (silver.status === 0) {
+        for (const item of silver.result) {
+          priceMap[item.type] = item
+        }
+      }
+      else if (silver.status === 104) {
+        priceMap[METAL_CODES.silver] = {
+          type: METAL_CODES.silver,
+          typename: '白银',
+          price: 'N/A', // 当前价
+          openingprice: 'N/A', // 开盘价
+          maxprice: 'N/A', // 最高价
+          minprice: 'N/A', // 最低价
+          changepercent: 'N/A', // 涨跌幅
+          lastclosingprice: 'N/A', // 昨收价
+          tradeamount: 'N/A', // 成交量
+          updatetime: 'N/A', // 更新时间
+        }
+      }
 
     return {
       time: this.formatDatetime(Date.now()),
@@ -286,11 +425,12 @@ export class GoldPrice implements IFeature {
     while (retryCount < FETCH_RETRY_LIMIT) {
       try {
         const url = GOLD_API_URLS[metal as keyof typeof GOLD_API_URLS]
-        const res = await fetch(url, { headers: { 'x-access-token': GOLD_API_TOKEN } })
+        const res = await fetch(url, { method: 'GET', headers: { 'x-access-token': GOLD_API_TOKEN } })
         if (!res.ok) {
           throw new Error(`Failed to fetch ${metal} price: ${res.status} ${res.statusText}`)
         }
         json = await res.json() as IGoldApiResult
+        break
       }
       catch (err) {
         console.error(`[GoldPrice] Error fetching ${metal} price:`, err)
@@ -299,7 +439,6 @@ export class GoldPrice implements IFeature {
         await new Promise(resolve => setTimeout(resolve, 1000)) // Exponential backoff
         continue
       }
-      break
     }
 
     return json
@@ -312,7 +451,7 @@ export class GoldPrice implements IFeature {
       try {
         const result = await this.fetchUSDPrice(metal)
         if (result) {
-          results[metal.toLowerCase()] = result
+          results[METAL_NAMES[result.metal]] = result
         }
       } catch (err) {
         console.error(`[GoldPrice] Error fetching ${metal} price:`, err)
@@ -323,10 +462,10 @@ export class GoldPrice implements IFeature {
 
   /** Format a timestamp to a readable Beijing-time datetime string */
   private formatDatetime(ts: number): string {
-    const date = new Date(ts)
-    const bj = new Date(date.getTime() + 8 * 3600 * 1000)
+    if (!ts || isNaN(ts)) return 'N/A'
+    const bj = new Date(ts + 8 * 3600 * 1000)
     const pad = (n: number) => n.toString().padStart(2, '0')
-    return `${bj.getFullYear()}-${pad(bj.getMonth() + 1)}-${pad(bj.getDate())} ${pad(bj.getHours())}:${pad(bj.getMinutes())}`
+    return `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())} ${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}`
   }
 
   async deal_with_message(
@@ -350,9 +489,9 @@ export class GoldPrice implements IFeature {
         console.log(`[GoldPrice] Cache hit for window ${windowTs}`)
       }
       else if (!result) {
-        console.log(`[GoldPrice] Cache miss for window ${windowTs}, fetching from AllTick API...`)
-        var result1 = await this.fetchCNYPricesFromAPI()
-        var result2 = await this.fetchUSDPricesFromAPI()
+        console.log(`[GoldPrice] Cache miss for window ${windowTs}, fetching from API...`)
+        let result1 = await this.fetchCNYPricesFromAPI()
+        let result2 = await this.fetchUSDPricesFromAPI()
 
         result = {
           ...result1,
@@ -366,30 +505,73 @@ export class GoldPrice implements IFeature {
       else {
 
         if (!result.gold || !result.platinum) {
-          const cnyGold = await this.fetchCNYGoldPrice();
-          result.gold = cnyGold?.result.find(item => item.type === METAL_CODES.gold) || result.gold || null
-          result.platinum = cnyGold?.result.find(item => item.type === METAL_CODES.platinum) || result.platinum || null
+          try {
+            const cnyGold = await this.fetchCNYGoldPrice();
+            result.gold = cnyGold?.result?.find(item => item.type === METAL_CODES.gold) || result.gold || null
+            result.platinum = cnyGold?.result?.find(item => item.type === METAL_CODES.platinum) || result.platinum || null
+          }
+          catch (err) {
+            console.error('[GoldPrice] Error fetching CNY gold/platinum price:', err)
+          }
         }
 
         if (!result.silver) {
-          const cnySilver = await this.fetchCNYSilverPrice();
-          result.silver = cnySilver?.result.find(item => item.type === METAL_CODES.silver) || result.silver || null
+          try {
+            const cnySilver = await this.fetchCNYSilverPrice();
+            result.silver = cnySilver?.result?.find(item => item.type === METAL_CODES.silver) || result.silver || null
+          }
+          catch (err) {
+            console.error('[GoldPrice] Error fetching CNY silver price:', err)
+          }
         }
 
         if (!result.gold_usd) {
-          const goldUsd = await this.fetchUSDPrice('XAU');
-          result.gold_usd = goldUsd || result.gold_usd || null
+          try {
+            const goldUsd = await this.fetchUSDPrice('XAU');
+            result.gold_usd = goldUsd || result.gold_usd || null
+          }
+          catch (err) {
+            console.error('[GoldPrice] Error fetching gold USD price:', err)
+          }
         }
 
         if (!result.silver_usd) {
-          const silverUsd = await this.fetchUSDPrice('XAG');
-          result.silver_usd = silverUsd || result.silver_usd || null
+          try {
+            const silverUsd = await this.fetchUSDPrice('XAG');
+            result.silver_usd = silverUsd || result.silver_usd || null
+          }
+          catch (err) {
+            console.error('[GoldPrice] Error fetching silver USD price:', err)
+          }
         }
 
         if (!result.platinum_usd) {
-          const platinumUsd = await this.fetchUSDPrice('XPT');
-          result.platinum_usd = platinumUsd || result.platinum_usd || null
+          try {
+            const platinumUsd = await this.fetchUSDPrice('XPT');
+            result.platinum_usd = platinumUsd || result.platinum_usd || null
+          }
+          catch (err) {
+            console.error('[GoldPrice] Error fetching platinum USD price:', err)
+          }
         }
+      }
+
+      let usdCnyRate: number | null = null
+      try {
+        let rate = await this.getCachedRate()
+        if (!rate || typeof rate.usd_cny !== 'number' || (now - rate.time) >= FETCH_INTERVAL_MS) {
+          let fetchedRate = await this.fetchUSDRateCNY()
+          if (fetchedRate && typeof fetchedRate.usd_cny === 'number') {
+            rate = fetchedRate
+          }
+        }
+
+        if (rate && typeof rate.usd_cny === 'number') {
+          usdCnyRate = rate.usd_cny
+        }
+      }
+      catch (err) {
+        console.error('[GoldPrice] Error fetching USD/CNY rate:', err)
       }
 
       const ret = this.Result
@@ -401,6 +583,7 @@ export class GoldPrice implements IFeature {
         .replace('{gold_low}', result.gold ? result.gold.minprice : 'N/A')
         .replace('{gold_changepercent}', result.gold ? result.gold.changepercent : 'N/A')
         .replace('{gold_lastclosingprice}', result.gold ? result.gold.lastclosingprice : 'N/A')
+        .replace('{gold_updatetime}', result.gold ? result.gold.updatetime : 'N/A')
 
         .replace('{silver}', result.silver ? result.silver.price : 'N/A')
         .replace('{silver_open}', result.silver ? result.silver.openingprice : 'N/A')
@@ -408,6 +591,7 @@ export class GoldPrice implements IFeature {
         .replace('{silver_low}', result.silver ? result.silver.minprice : 'N/A')
         .replace('{silver_changepercent}', result.silver ? result.silver.changepercent : 'N/A')
         .replace('{silver_lastclosingprice}', result.silver ? result.silver.lastclosingprice : 'N/A')
+        .replace('{silver_updatetime}', result.silver ? result.silver.updatetime : 'N/A')
 
         .replace('{platinum}', result.platinum ? result.platinum.price : 'N/A')
         .replace('{platinum_open}', result.platinum ? result.platinum.openingprice : 'N/A')
@@ -415,27 +599,34 @@ export class GoldPrice implements IFeature {
         .replace('{platinum_low}', result.platinum ? result.platinum.minprice : 'N/A')
         .replace('{platinum_changepercent}', result.platinum ? result.platinum.changepercent : 'N/A')
         .replace('{platinum_lastclosingprice}', result.platinum ? result.platinum.lastclosingprice : 'N/A')
+        .replace('{platinum_updatetime}', result.platinum ? result.platinum.updatetime : 'N/A')
 
         .replace('{gold_usd}', result.gold_usd ? result.gold_usd.price.toFixed(2) : 'N/A')
+        .replace('{gold_usd_cny}', result.gold_usd && typeof usdCnyRate === 'number' ? (result.gold_usd.price * usdCnyRate / OUNCE_TO_GRAM).toFixed(2) : 'N/A')
         .replace('{gold_usd_open}', result.gold_usd ? result.gold_usd.open_price.toFixed(2) : 'N/A')
         .replace('{gold_usd_high}', result.gold_usd ? result.gold_usd.high_price.toFixed(2) : 'N/A')
         .replace('{gold_usd_low}', result.gold_usd ? result.gold_usd.low_price.toFixed(2) : 'N/A')
         .replace('{gold_usd_changepercent}', result.gold_usd ? result.gold_usd.chp.toFixed(2) : 'N/A')
         .replace('{gold_usd_lastclosingprice}', result.gold_usd ? result.gold_usd.prev_close_price.toFixed(2) : 'N/A')
+        .replace('{gold_usd_updatetime}', result.gold_usd ? this.formatDatetime(result.gold_usd.timestamp * 1000) : 'N/A')
 
         .replace('{silver_usd}', result.silver_usd ? result.silver_usd.price.toFixed(2) : 'N/A')
+        .replace('{silver_usd_cny}', result.silver_usd && typeof usdCnyRate === 'number' ? (result.silver_usd.price * usdCnyRate / OUNCE_TO_GRAM).toFixed(2) : 'N/A')
         .replace('{silver_usd_open}', result.silver_usd ? result.silver_usd.open_price.toFixed(2) : 'N/A')
         .replace('{silver_usd_high}', result.silver_usd ? result.silver_usd.high_price.toFixed(2) : 'N/A')
         .replace('{silver_usd_low}', result.silver_usd ? result.silver_usd.low_price.toFixed(2) : 'N/A')
         .replace('{silver_usd_changepercent}', result.silver_usd ? result.silver_usd.chp.toFixed(2) : 'N/A')
         .replace('{silver_usd_lastclosingprice}', result.silver_usd ? result.silver_usd.prev_close_price.toFixed(2) : 'N/A')
+        .replace('{silver_usd_updatetime}', result.silver_usd ? this.formatDatetime(result.silver_usd.timestamp * 1000) : 'N/A')
 
         .replace('{platinum_usd}', result.platinum_usd ? result.platinum_usd.price.toFixed(2) : 'N/A')
+        .replace('{platinum_usd_cny}', result.platinum_usd && typeof usdCnyRate === 'number' ? (result.platinum_usd.price * usdCnyRate / OUNCE_TO_GRAM).toFixed(2) : 'N/A')
         .replace('{platinum_usd_open}', result.platinum_usd ? result.platinum_usd.open_price.toFixed(2) : 'N/A')
         .replace('{platinum_usd_high}', result.platinum_usd ? result.platinum_usd.high_price.toFixed(2) : 'N/A')
         .replace('{platinum_usd_low}', result.platinum_usd ? result.platinum_usd.low_price.toFixed(2) : 'N/A')
         .replace('{platinum_usd_changepercent}', result.platinum_usd ? result.platinum_usd.chp.toFixed(2) : 'N/A')
         .replace('{platinum_usd_lastclosingprice}', result.platinum_usd ? result.platinum_usd.prev_close_price.toFixed(2) : 'N/A')
+        .replace('{platinum_usd_updatetime}', result.platinum_usd ? this.formatDatetime(result.platinum_usd.timestamp * 1000) : 'N/A')
 
       return Structs.text(ret)
     } catch (err) {
