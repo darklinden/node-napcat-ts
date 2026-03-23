@@ -4,13 +4,15 @@ import { IFeature } from './Feature.js'
 import { jrrp } from './jrrp.js'
 import { dup_check } from './dup/dup_check.js'
 import draw5k from './5k/draw5k.js'
-import { goldPrice } from './gold.js'
+import { goldPrice } from './gold/gold.js'
+import choice from './choice.js'
 
 const features: IFeature[] = [
   jrrp,
   dup_check,
   draw5k,
   goldPrice,
+  choice,
 ]
 
 const WsConfig: NCWebsocketOptions = {
