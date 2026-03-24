@@ -7,7 +7,7 @@ export class Choice implements IFeature {
   public feature_name = '帮我选: 帮我选 + 选项1 + 选项2 + ... 来帮你做选择'
 
   public check_command(msg: Receive[keyof Receive]): boolean {
-    return msg.type == 'text' && (msg.data.text.startsWith('-choice') || msg.data.text.startsWith('choice') || msg.data.text.startsWith('帮我选'));
+    return msg.type == 'text' && (msg.data.text.startsWith('-choice ') || msg.data.text.startsWith('choice ') || msg.data.text.startsWith('帮我选 '));
   }
 
   async deal_with_message(

@@ -38,6 +38,37 @@ import { FETCH_RETRY_LIMIT, IAPIRequest, IAPIRequestResult } from './IAPIRequest
 //             ]
 // }
 
+// {
+//     "status": 0,
+//     "msg": "ok",
+//     "result": [
+//         {
+//             "type": "Ag(T+D)",
+//             "typename": "白银延期",
+//             "price": "16689",
+//             "openingprice": "16200",
+//             "maxprice": "17479",
+//             "minprice": "16180",
+//             "changepercent": "2.34",
+//             "lastclosingprice": "15269",
+//             "tradeamount": "340568",
+//             "updatetime": "2026-03-24 11:21:03"
+//         },
+//         {
+//             "type": "Ag99.99",
+//             "typename": "白银9999",
+//             "price": "16333",
+//             "openingprice": "0",
+//             "maxprice": "0",
+//             "minprice": "0",
+//             "changepercent": "-10.00",
+//             "lastclosingprice": "16333",
+//             "tradeamount": "40",
+//             "updatetime": "2026-03-24 11:21:03"
+//         }
+//     ]
+// }
+
 
 interface IJisuApiResultItem {
     type: string
@@ -90,26 +121,26 @@ export class JISUAPI_COM implements IAPIRequest {
                     prices.push({
                         metal: 'XAU',
                         currency: 'CNY',
-                        update: item.updatetime,
-                        prev_close_price: item.lastclosingprice,
-                        open_price: item.openingprice,
-                        low_price: item.minprice,
-                        high_price: item.maxprice,
-                        price: item.price,
-                        change_percent: item.changepercent,
+                        update: item.updatetime ?? 'N/A',
+                        prev_close_price: item.lastclosingprice ?? 'N/A',
+                        open_price: item.openingprice ?? 'N/A',
+                        low_price: item.minprice ?? 'N/A',
+                        high_price: item.maxprice ?? 'N/A',
+                        price: item.price ?? 'N/A',
+                        change_percent: item.changepercent ?? 'N/A',
                     })
                 }
                 else if (item.type === 'Pt99.95') {
                     prices.push({
                         metal: 'XPT',
                         currency: 'CNY',
-                        update: item.updatetime,
-                        prev_close_price: item.lastclosingprice,
-                        open_price: item.openingprice,
-                        low_price: item.minprice,
-                        high_price: item.maxprice,
-                        price: item.price,
-                        change_percent: item.changepercent,
+                        update: item.updatetime ?? 'N/A',
+                        prev_close_price: item.lastclosingprice ?? 'N/A',
+                        open_price: item.openingprice ?? 'N/A',
+                        low_price: item.minprice ?? 'N/A',
+                        high_price: item.maxprice ?? 'N/A',
+                        price: item.price ?? 'N/A',
+                        change_percent: item.changepercent ?? 'N/A',
                     })
                 }
             }
@@ -163,6 +194,8 @@ export class JISUAPI_COM implements IAPIRequest {
             }
         }
 
+        console.log(`[GoldPrice] Fetched CNY silver price from Jisu API: ${JSON.stringify(json)}`)
+
         if (json && +json.status === 0) {
             const prices = [] as IAPIRequestResult[]
             for (const item of json.result) {
@@ -170,13 +203,13 @@ export class JISUAPI_COM implements IAPIRequest {
                     prices.push({
                         metal: 'XAG',
                         currency: 'CNY',
-                        update: item.updatetime,
-                        prev_close_price: item.lastclosingprice,
-                        open_price: item.openingprice,
-                        low_price: item.minprice,
-                        high_price: item.maxprice,
-                        price: item.price,
-                        change_percent: item.changepercent,
+                        update: item.updatetime ?? 'N/A',
+                        prev_close_price: item.lastclosingprice ? (parseFloat(item.lastclosingprice ?? 0) / 1000).toFixed(2) : 'N/A', // Jisu API returns silver price in 元/千克, convert to 元/克
+                        open_price: item.openingprice ? (parseFloat(item.openingprice ?? 0) / 1000).toFixed(2) : 'N/A',
+                        low_price: item.minprice ? (parseFloat(item.minprice ?? 0) / 1000).toFixed(2) : 'N/A',
+                        high_price: item.maxprice ? (parseFloat(item.maxprice ?? 0) / 1000).toFixed(2) : 'N/A',
+                        price: item.price ? (parseFloat(item.price ?? 0) / 1000).toFixed(2) : 'N/A',
+                        change_percent: item.changepercent ? (parseFloat(item.changepercent ?? 0).toFixed(2) + '%') : 'N/A',
                     })
                 }
             }
@@ -199,13 +232,12 @@ export class JISUAPI_COM implements IAPIRequest {
     }
 
     async fetchResults(): Promise<IAPIRequestResult[]> {
-        return await this.fetchCNYGoldPrice()
-        // const [gold, silver] = await Promise.all([
-        //     this.fetchCNYGoldPrice(),
-        //     this.fetchCNYSilverPrice(),
-        // ])
+        const [gold, silver] = await Promise.all([
+            this.fetchCNYGoldPrice(),
+            this.fetchCNYSilverPrice(),
+        ])
 
-        // return [...gold, ...silver]
+        return [...gold, ...silver]
     }
 }
 
